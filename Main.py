@@ -1,73 +1,92 @@
 #Copyright: Copyright 2016 /u/sagiksp, all right reserved.
 #Seriously, don't be a dick.
 
-import praw, time, re
+import praw, time, re, json
+import os.path
 
-#Variables
+# Variables
+# Consider adding these in from a config file?
+user_agent = ""
+username = ""
+password = ""
 
-user_agent=""
-username=""
-password=""
-
-users = [] #Array of all people that used the bot, and times of use. Format: [[Username,UTC_Time],[Username,UTC_Time],...]
-
-yelled = []
-
+# Constants
+dataStoreName = 'data.json'
 Triggers = ('what', 'wut', 'wat')
 
 footer = """***
 
-[^^^Beep ^^^boop.](https://np.reddit.com/r/CantHearYouBot/)""" #Text to be in the end of a message
+[^^^Beep ^^^boop.](https://np.reddit.com/r/CantHearYouBot/)""" # Text to be in the end of a message
 
-def check_condition(c): #Check the bot condition
-    return (c.body.lower().rstrip('?') in Triggers) and (not RateLimit(c.author.name)) #Is the comment a trigger, and is the author not rate limited.
+lastUpdated = 0
 
-def bot_action(c,r): #Action the bot preforms
-    global users
-    parent = r.get_info(thing_id=c.parent_id) #get parent comment
+# users = {'username': lasttimeused}
+# yelled = {'parentpostid': timeresponded}
+if os.path.exists(dataStoreName):
+    # Read from the existing datastore.
+    with open(dataStoreName, 'r') as data:
+        data = json.loads(data.read())
+        users = data['users']
+        yelled = data['yelled']
+else:
+    # Form a new datastore and save it.
+    users = {}
+    yelled = {}
+    with open(dataStoreName, 'w') as data:
+        data.write(json.dumps({'users': users, 'yelled': yelled}))
 
-    if isNotAValidComment(parent): return #If it is a response to a thread, stop.
+def check_condition(c):
+    # Is the comment a trigger, and is the author not rate limited.
+    return (c.body.lower().rstrip('?') in Triggers) and (not RateLimit(c.author.name))
 
-    if parent.author.name == username and parent.body != "In da but": #If parent is bot and comment is not "in da but"
+def bot_action(c,r):
+    global users, yelled
+    # Action the bot preforms
+    parent = r.get_info(thing_id=c.parent_id)
+
+    # Check for if the comment is a top-level reply
+    if c.is_root:
         return
 
-    users.append([c.author.name,c.created_utc]) #Add username and time of use to the users list
+    # If parent is bot and comment is not "in da but"
+    if parent.author.name == username and parent.body != "In da but":
+        return
 
+    # Check for if the bot's already responded to this comment
+    if parent.id in yelled.keys():
+        return
 
-    if check_condition(parent): #What What
-        try: #Crashed without this
+    # Save some data about the user and post
+    users[c.author.name] = yelled[parent.id] = int(time.time())
+
+    if check_condition(parent): # What What
+        try:
             c.reply("In da but")
         except:
             pass
         return
 
-    lines = parent.body.split("\n") #Split parent into lines
+    lines = parent.body.split("\n")
     total = ""
-    for line in lines: #for each line
-        total += parseLine(line) #Parse line and add to total
-    try: #Crashes without this
-        c.reply(total + footer) #reply
-        print("\n"+total+"\n\n") #Debug
-    except:
+    for line in lines:
+        # Parse line and add to total
+        total += parseLine(line)
+    try:
+        c.reply(total + footer) # Reply
+        print("\n\n"+total+"\n") # Debug
+    except Exception as e:
+        print('ERROR WHEN REPLYING:',e)
         return
 
-def findUsersWithName(name): #find all people with username on the users list
-    uses = []
-    for use in users: #For each use
-        if use[0] == name: #If use name is username
-            uses.append(use) 
-    return uses #Yesus
+def RateLimit(username):
+    # Boolean. If user has used the bot in the last 5 minutes, stop.
+    if username == "sagiksp":
+        return False
 
-def getLastTimeOfUse(name): #Get last time a username has used the bot
-    return findUsersWithName(name)[-1][1]
+    currentTime = int(time.time())
+    lastUseTime = users[username] if username in users else 0
 
-def RateLimit(username): #Boolean. if user has used the bot in the last 5 minutes, stop.
-    if username == "sagiksp": return False #unlimited testing
-    c_time = time.time() #Current time
-    if findUsersWithName(username) == []: #first time using the bot
-        return False #No Rate limiting
-    lastUseTime = getLastTimeOfUse(username) #Latest time of use
-    return (c_time - lastUseTime) <= 300 #has the user used the bot in the last 300 seconds (5 minutes)
+    return (currentTime - lastUseTime) <= (60 * 5) # 5 minutes
 
 def parseLine(line):
     # Some basic parsing rules that bypass the rest of our logic.
@@ -78,14 +97,14 @@ def parseLine(line):
     if line[0] != '#':
         line = '#' + line
     
-    # Uppercase the line, all except URLs. Could probably be made more effective?
-    ldata = re.split(r"(\[.*?\]\(.*?\))", line) # this finds reddit markdown URLs, i.e. [google](http://google.com)
+    # Uppercase the line, all except URLs.
+    ldata = re.split(r"(\[.*?\]\(.*?\))", line) # Reddit markdown URLs.
     line = ''
     for content in ldata:
-        if not content.startswith('['): # typical string
+        if not content.startswith('['): # Typical string
             content = content.upper()
         else:
-            # url; so let's break it up a little further and capitalize the title also
+            # URL, so let's break it up a little further and capitalize the title also.
             url_groups = re.search(r"\[(.*)\]\((.*)\)", content)
             content = '[' + url_groups.group(1).upper() + '](' + url_groups.group(2) + ')'
         
@@ -94,13 +113,43 @@ def parseLine(line):
     # Finally, return!
     return line + '\n'
 
-def isNotAValidComment(thing): #Is it not a valid comment
-    return hasattr(thing,"domain") #If it has domain, It's a post, so ignore.
+def updateData():
+    global users, yelled
 
-r = praw.Reddit(user_agent) #user_agent
+    currentTime = int(time.time())
+
+    # USERS
+    for user, utime in users.iteritems():
+        if (currentTime - utime) >= (60 * 60): # Keep users for an hour (rate limit-->only 5 mins)
+            del users[user]
+
+    # YELLED
+    for yell, utime in yelled.iteritems():
+        if (currentTime - utime) >= (60 * 60 * 24 * 5): # Keep used parents for 5 days
+            del yelled[yell]
+
+    # Save the new data.
+    with open(dataStoreName, 'w') as data:
+        data.write(json.dumps({'users': users, 'yelled': yelled}))
+
+    # Debug
+    print('Updated the datastores @',currentTime)
+    return
+
+r = praw.Reddit(user_agent)
 
 r.login(username=username,password=password)
 
-for c in praw.helpers.comment_stream(r, 'all'): #for all comments
-    if check_condition(c): #If condition
-        bot_action(c,r) #Action
+# Use try/finally to run one last command after a keyboardinterrupt
+try:
+    for c in praw.helpers.comment_stream(r, 'all'):
+        if check_condition(c):
+            bot_action(c,r) # Actually go through the motions.
+
+        if (int(time.time()) - lastUpdated) >= (60 * 30): # 30 minutes
+            # We haven't updated our database in while, do so now
+            updateData()
+            lastUpdated = int(time.time())
+finally:
+    # Alternatively, update the datastore on exit.
+    updateData()
