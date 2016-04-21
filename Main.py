@@ -53,7 +53,7 @@ def bot_action(c,r):
         return
 
     # Check for if the bot's already responded to this comment
-    if parent.id in yelled.keys():
+    if parent.id in yelled:
         return
 
     # Save some data about the user and post
@@ -119,13 +119,14 @@ def updateData():
     currentTime = int(time.time())
 
     # USERS
-    for user, utime in users.iteritems():
-        if (currentTime - utime) >= (60 * 60): # Keep users for an hour (rate limit-->only 5 mins)
+    # NB: http://stackoverflow.com/a/11941855/2676181
+    for user in users.keys():
+        if (currentTime - users[user]) >= (60 * 60): # Keep users for an hour (rate limit-->only 5 mins)
             del users[user]
 
     # YELLED
-    for yell, utime in yelled.iteritems():
-        if (currentTime - utime) >= (60 * 60 * 24 * 5): # Keep used parents for 5 days
+    for yell in yelled.keys():
+        if (currentTime - yelled[yell]) >= (60 * 60 * 24 * 5): # Keep yelled parents for 5 days
             del yelled[yell]
 
     # Save the new data.
